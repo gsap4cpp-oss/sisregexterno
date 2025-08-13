@@ -7,6 +7,18 @@ from playwright.sync_api import sync_playwright
 API_TOKEN = os.getenv("API_TOKEN", "troque-por-um-token-forte")
 
 app = FastAPI(title="SISREG-DF Scraper (MPDFT Lista de Espera)")
+@app.get("/debug/auth")
+def debug_auth(
+    authorization: Optional[str] = Header(None),
+    x_api_token: Optional[str] = Header(None),
+):
+    return {
+        "has_authorization": bool(authorization),
+        "auth_startswith": (authorization[:6] if authorization else None),
+        "auth_len": (len(authorization) if authorization else 0),
+        "x_api_token_len": (len(x_api_token) if x_api_token else 0)
+    }
+
 @app.get("/")
 def root():
     return {"status": "ok", "service": "sisreg-api"}
