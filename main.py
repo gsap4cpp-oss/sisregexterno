@@ -15,9 +15,31 @@ def root():
 def healthz():
     return {"status": "ok"}
 
-def auth(authorization: Optional[str] = Header(None)):
-    if API_TOKEN and authorization != f"Bearer {API_TOKEN}":
+from typing import Optional
+from fastapi import Header, HTTPException
+
+def auth(
+    authorization: Optional[str] = Header(None),
+    x_api_token: Optional[str] = Header(None),
+):
+    # Extrai token do header Authorization (suporta "Bearer <token>" ou só o token)
+    token = None
+    if authorization:
+        a = authorization.strip()
+        if a.lower().startswith("bearer "):
+            token = a[7:].strip()
+        else:
+            token = a
+
+    # Alternativa: header X-Api-Token
+    if not token and x_api_token:
+        token = x_api_token.strip()
+
+    expected = (os.getenv("API_TOKEN") or "").strip()
+
+    if expected and token != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
 
 URL = "https://www.mpdft.mp.br/acompanhamento-sus-df/lista-de-espera"
 
