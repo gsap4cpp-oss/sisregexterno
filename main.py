@@ -57,29 +57,44 @@ def _to_int(s: str) -> Optional[int]:
     except:
         return None
 
-# --- helper: habilita e preenche o campo do código ---
+# --- helper: habilita e preenche o campo do código (mais robusto) ---
 def _habilitar_e_preencher_codigo(page, codigo: str):
-    # 1) marca o rádio "Código de solicitação"
+    # Se houver iframe, tenta usar o frame que contém a página-alvo
+    ctx = page
     try:
-        page.get_by_text("Código de solicitação", exact=False).first.click(timeout=3000)
+        for f in page.frames:
+            if 'lista-de-espera' in (f.url or ''):
+                ctx = f
+                break
+    except:
+        pass
+
+    # 1) garantir que a opção "Código de solicitação" esteja selecionada
+    try:
+        ctx.get_by_text("Código de solicitação", exact=False).first.click(timeout=2500)
     except:
         try:
-            page.get_by_role("radio", name=re.compile("Código.*solicita", re.I)).check(timeout=3000)
+            ctx.get_by_role("radio", name=re.compile("Código.*solicita", re.I)).check(timeout=2500)
         except:
-            page.locator('input[type="radio"]').first.click(timeout=3000)
+            try:
+                ctx.locator('mat-radio-button, input[type="radio"]').first.click(timeout=2500)
+            except:
+                pass
 
-    # 2) localiza o input (vários seletores de fallback)
+    # 2) localizar o input (vários seletores possíveis)
     candidatos = [
         'input[placeholder*="Código" i]',
         'input[placeholder*="codigo" i]',
         'input[placeholder*="solic" i]',
+        'input[aria-label*="Código" i]',
+        '[formcontrolname*="codigo" i]',
         'input[id*="codigo" i]',
         'input[name*="codigo" i]',
         'form input[type="text"]'
     ]
     campo = None
     for css in candidatos:
-        loc = page.locator(css).first
+        loc = ctx.locator(css).first
         try:
             loc.wait_for(state="visible", timeout=4000)
             campo = loc
@@ -89,44 +104,70 @@ def _habilitar_e_preencher_codigo(page, codigo: str):
     if not campo:
         raise HTTPException(400, "Não localizei o campo de código na página.")
 
-    # 3) tenta até ficar habilitado/editável; se não, destrava via JS
-    for _ in range(12):  # ~6s
+    # 3) tentar habilitar e preencher
+    sucesso = False
+    for _ in range(16):  # ~8s
+        try:
+            # Remover atributos e PROPRIEDADES que bloqueiam edição
+            campo.evaluate("""el => {
+                try { el.removeAttribute('disabled'); } catch(e){}
+                try { el.removeAttribute('aria-disabled'); } catch(e){}
+                try { el.removeAttribute('readonly'); } catch(e){}
+                try { el.disabled = False; } catch(e){}
+                try { el.disabled = false; } catch(e){}
+                try { el.readOnly = false; } catch(e){}
+            }""")
+        except:
+            pass
+
+        # se já estiver editável, usa fill
         try:
             if campo.is_enabled() and campo.is_editable():
-                campo.fill(codigo, timeout=3000)
+                campo.fill(str(codigo), timeout=2500)
+                got = campo.evaluate("el => el && el.value ? String(el.value) : ''")
+                if (got or "").strip() == str(codigo).strip():
+                    sucesso = True
+                    break
+        except:
+            pass
+
+        # fallback: click + keyboard typing
+        try:
+            campo.click(timeout=1500)
+            try:
+                campo.press("Control+A")
+                campo.press("Delete")
+            except:
+                pass
+            campo.type(str(codigo), delay=20)
+            got = campo.evaluate("el => el && el.value ? String(el.value) : ''")
+            if (got or "").strip() == str(codigo).strip():
+                sucesso = True
                 break
         except:
             pass
-        # remover disabled/readonly/aria-disabled
+
+        ctx.wait_for_timeout(500)
+
+    if not sucesso:
+        # última cartada: setar por JS + eventos
         try:
-            page.evaluate(
-                """(sel)=>{
-                    const el=document.querySelector(sel);
-                    if(!el) return;
-                    el.removeAttribute('disabled');
-                    el.removeAttribute('aria-disabled');
-                    el.removeAttribute('readonly');
-                }""",
-                campo.selector
-            )
+            campo.evaluate("""(el, val) => {
+                try { el.disabled = false; el.readOnly = false; } catch(e){}
+                try { el.removeAttribute('disabled'); el.removeAttribute('readonly'); } catch(e){}
+                el.value = val;
+                el.dispatchEvent(new Event('input',  { bubbles:true }));
+                el.dispatchEvent(new Event('change', { bubbles:true }));
+            }""", str(codigo))
+            got = campo.evaluate("el => el && el.value ? String(el.value) : ''")
+            if (got or "").strip() == str(codigo).strip():
+                sucesso = True
         except:
             pass
-        page.wait_for_timeout(500)
-    else:
-        # força valor + eventos caso não tenha conseguido fill
-        page.evaluate(
-            """(sel, val)=>{
-                const el=document.querySelector(sel);
-                if(!el) return;
-                el.removeAttribute('disabled');
-                el.removeAttribute('readonly');
-                el.value = val;
-                el.dispatchEvent(new Event('input', {bubbles:true}));
-                el.dispatchEvent(new Event('change', {bubbles:true}));
-            }""",
-            campo.selector, codigo
-        )
-    page.wait_for_timeout(300)  # pequena pausa p/ framework processar
+
+    if not sucesso:
+        raise HTTPException(502, "Não consegui habilitar/preencher o campo do código.")
+    ctx.wait_for_timeout(250)
 
 # =======================
 # Scraping
